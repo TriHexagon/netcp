@@ -1,7 +1,6 @@
 extern crate time;
 
 use std::io::{Read, Write, Seek};
-use std::process::exit;
 
 const HELP_TEXT: &'static str = "netcp (send,receive) ipaddress[:port] filename";
 const CALL_SIGN: &'static str = "netcp v0.1";
@@ -11,13 +10,23 @@ const MSG_FILE: &'static str = "FILE";
 const MSG_END: &'static str = "END ";
 const TIMEOUT: i64 = 800;
 
+macro_rules! error {
+    ($($tt:tt)*) => {{
+        use std::io::Write;
+        write!(&mut ::std::io::stderr(), "Error: ").unwrap();
+        write!(&mut ::std::io::stderr(), $($tt)*).unwrap();
+        writeln!(&mut ::std::io::stderr(), ".").unwrap();
+        ::std::process::exit(1)
+    }}
+}
+
 fn main() {
     //get commandline arguments
     let args: Vec<String> = std::env::args().collect();
 
     //if there is no argument (first arg is always application name), error
     if args.len() == 1 {
-        error("No arguments");
+        error!("No arguments");
     }
 
     //execute option
@@ -29,7 +38,7 @@ fn main() {
         "send" => {
             //sending needs min. 4 args (appl. name, "send", address, filenames...)
             if args.len() < 4 {
-                error("Too few arguments");
+                error!("Too few arguments");
             }
 
             send(&args[2], &args[3..]);
@@ -38,7 +47,7 @@ fn main() {
         "receive" => {
             //receiving needs exactly 3 args (appl. name, "receive", address)
             if args.len() != 3 {
-                error("Too few or many arguments");
+                error!("Too few or many arguments");
             }
 
             receive(&args[2]);
@@ -46,14 +55,9 @@ fn main() {
 
         //Unknown parameter
         _ => {
-            error("Unknown parameter");
+            error!("Unknown parameter");
         }
     }
-}
-
-fn error(msg: &str) {
-    println!("Error: {}.", msg);
-    std::process::exit(1);
 }
 
 fn receive_data(stream: &mut std::net::TcpStream, buf: &mut [u8]) {
@@ -61,13 +65,11 @@ fn receive_data(stream: &mut std::net::TcpStream, buf: &mut [u8]) {
     let mut received_bytes: usize = 0;
 
     while received_bytes < buf.len() && (begin - time::get_time()).num_milliseconds() < TIMEOUT {
-        let res = stream.read(&mut buf[received_bytes..]);
+        let bytes = match stream.read(&mut buf[received_bytes..]) {
+            Err(_) => error!("Connection lost"),
+            Ok(bytes) => bytes
+        };
 
-        if res.is_err() {
-            error("Connection lost");
-        }
-
-        let bytes = res.unwrap();
         received_bytes += bytes;
 
         if bytes != 0 {
@@ -76,7 +78,7 @@ fn receive_data(stream: &mut std::net::TcpStream, buf: &mut [u8]) {
     }
 
     if received_bytes < buf.len() {
-        error("Connection lost (timeout)");
+        error!("Connection lost (timeout)");
     }
 }
 
@@ -85,13 +87,11 @@ fn send_data(stream: &mut std::net::TcpStream, data: &[u8]) {
     let mut sended_bytes: usize = 0;
 
     while sended_bytes < data.len() && (begin - time::get_time()).num_milliseconds() < TIMEOUT {
-        let res = stream.write(&data[sended_bytes..]);
+        let bytes = match stream.write(&data[sended_bytes..]) {
+            Err(_) => error!("Connection lost"),
+            Ok(bytes) => bytes
+        };
 
-        if res.is_err() {
-            error("Connection lost");
-        }
-
-        let bytes = res.unwrap();
         sended_bytes += bytes;
 
         if bytes != 0 {
@@ -100,7 +100,7 @@ fn send_data(stream: &mut std::net::TcpStream, data: &[u8]) {
     }
 
     if sended_bytes < data.len() {
-        error("Connection lost (timeout)");
+        error!("Connection lost (timeout)");
     }
 }
 
@@ -126,12 +126,11 @@ fn receive_string(stream: &mut std::net::TcpStream) -> String {
     let size = receive_u64(stream);
     let mut vec = vec![0u8; size as usize];
     receive_data(stream, &mut vec[..] );
-    let string_res = String::from_utf8(vec);
-    match string_res {
-        Err(_) => { error("Couldn't convert bytes to string"); }
-        _ => {}
-    }
-    return string_res.unwrap();
+    let string = match String::from_utf8(vec) {
+        Err(_) => error!("Couldn't convert bytes to string"),
+        Ok(string) => string
+    };
+    return string;
 }
 
 fn check_agreement(stream: &mut std::net::TcpStream) -> bool {
@@ -145,9 +144,8 @@ fn check_agreement(stream: &mut std::net::TcpStream) -> bool {
         return false;
     }
     else {
-        error("Invalid protocol");
+        error!("Invalid protocol");
     }
-    return false;
 }
 
 fn compare_byte_array(a: &[u8], b: &[u8]) -> bool {
@@ -165,9 +163,20 @@ fn compare_byte_array(a: &[u8], b: &[u8]) -> bool {
 }
 
 fn get_filesize(file: &mut std::fs::File) -> u64 {
-    let current = file.seek(std::io::SeekFrom::Current(0)).ok().expect("Error: file seeking failed.");
-    let size = file.seek(std::io::SeekFrom::End(0)).ok().expect("Error: file seeking failed.");
-    file.seek(std::io::SeekFrom::Start(current)).ok().expect("Error: file seeking failed.");
+    let current = match file.seek(std::io::SeekFrom::Current(0)) {
+        Err(_) => error!("File seeking failed"),
+        Ok(current) => current
+    };
+
+    let size = match file.seek(std::io::SeekFrom::End(0)) {
+        Err(_) => error!("File seeking failed"),
+        Ok(size) => size
+    };
+
+    if let Err(_) = file.seek(std::io::SeekFrom::Start(current)) {
+        error!("File seeking failed");
+    }
+
     return size;
 }
 
@@ -181,12 +190,10 @@ fn send(address: &String, file_names: &[String]) {
 
     //1. check file existences
     //get working directory to find correct files
-    let work_dir_res = std::env::current_dir();
-    match work_dir_res {
-        Err(_) => { error("Couldn't find working directory"); },
-        _ => {}
-    }
-    let work_dir = work_dir_res.unwrap();
+    let work_dir = match std::env::current_dir() {
+        Err(_) => error!("Couldn't find working directory"),
+        Ok(work_dir) => work_dir
+    };
 
     //join working directory and file_names to get absolute file addresses in a vector
     let mut file_addrs: Vec<std::path::PathBuf> = Vec::with_capacity(file_names.len());
@@ -197,33 +204,28 @@ fn send(address: &String, file_names: &[String]) {
     //open and close files to check accessibility
     for file_addr in &file_addrs {
         if let Err(_) = std::fs::File::open(&file_addr) {
-            println!("Error: File doesn't exist or is not accessible ({}).", file_addr.display());
-            exit(1);
+            error!("File doesn't exist or is not accessible ({})", file_addr.display());
         }
     }
 
     //2. check address and bind listener
-    let listener_res = std::net::TcpListener::bind(&address[..]);
-    match listener_res {
-        Err(ref e) => { println!("Error: {}.", e); exit(1); },
-        _ => {}
-    }
-    let listener = listener_res.unwrap();
+    let listener = match std::net::TcpListener::bind(&address[..]) {
+        Err(e) => error!("{}", e),
+        Ok(listener) => listener
+    };
 
     //3. connect with client
     print!("Waiting for client..."); let _ = std::io::stdout().flush();
-    let stream_res = listener.accept();
-    match stream_res {
-        Err(ref e) => { println!("Error: {}.", e); exit(1); },
-        _ => {}
-    }
-    let (mut stream, client_addr) = stream_res.unwrap();
+    let (mut stream, client_addr) = match listener.accept() {
+        Err(e) => error!("{}", e),
+        Ok(stream) => stream
+    };
 
     //3. check if client send correct CALL_SIGN
     receive_data(&mut stream, &mut buf[..CALL_SIGN.len()]);
 
     if compare_byte_array(CALL_SIGN.as_bytes(), &buf[..CALL_SIGN.len()]) == false {
-        error("Invalid protocol");
+        error!("Invalid protocol");
     }
 
     send_data(&mut stream, MSG_AGREE.as_bytes());
@@ -233,29 +235,30 @@ fn send(address: &String, file_names: &[String]) {
     //send files
     for file_addr in &file_addrs {
 
-        let file_res = std::fs::File::open(&file_addr);
-        match file_res {
-            Err(_) => { error("Couldn't open file") },
-            _ => {}
-        }
-        let mut file = file_res.unwrap();
+        let mut file = match std::fs::File::open(&file_addr) {
+            Err(_) => error!("Couldn't open file"),
+            Ok(file) => file
+        };
+
         let filesize = get_filesize(&mut file);
 
         send_data(&mut stream, MSG_FILE.as_bytes()); //send file is ready to send
         send_u64(&mut stream, filesize); //send file size as u64
 
         //send filename
-        let filename_os_opt = file_addr.file_name();
-        if filename_os_opt.is_none() {
-            error("Couldn't convert filename to utf8");
-        }
-        let filename_opt = filename_os_opt.unwrap().to_str();
-        if filename_opt.is_none() {
-            error("Couldn't convert filename to utf8");
-        }
-        send_string(&mut stream, &filename_opt.unwrap());
+        let filename_os = match file_addr.file_name() {
+            None => error!("Couldn't convert filename to utf8"),
+            Some(filename_os) => filename_os
+        };
 
-        print!("Send {}...", &filename_opt.unwrap()); let _ = std::io::stdout().flush();
+        let filename = match filename_os.to_str() {
+            None => error!("Couldn't convert filename to utf8"),
+            Some(filename) => filename
+        };
+
+        send_string(&mut stream, &filename);
+
+        print!("Send {}...", &filename); let _ = std::io::stdout().flush();
 
         //if client send MSG_DISAGREE, continue else send file
         if check_agreement(&mut stream) == false {
@@ -268,14 +271,14 @@ fn send(address: &String, file_names: &[String]) {
         while i < (filesize-1) {
             if (filesize - i) >= buf.len() as u64 {
                 if let Err(_) = file.read(&mut buf) {
-                    error("Couldn't read from file");
+                    error!("Couldn't read from file");
                 }
                 send_data(&mut stream, &buf);
                 i += buf.len() as u64;
             }
             else {
                 if let Err(_) = file.read(&mut buf[..(filesize - i) as usize]) {
-                    error("Couldn't read from file");
+                    error!("Couldn't read from file");
                 }
                 send_data(&mut stream, &buf[..(filesize - i) as usize]);
                 i = filesize-1;
@@ -292,24 +295,20 @@ fn send(address: &String, file_names: &[String]) {
 fn receive(address: &String) {
     let mut buf = [0u8; 512];
 
-    let work_dir_res = std::env::current_dir();
-    match work_dir_res {
-        Err(_) => { error("Couldn't find working directory"); },
-        _ => {}
-    }
-    let work_dir = work_dir_res.unwrap();
+    let work_dir = match std::env::current_dir() {
+        Err(_) => error!("Couldn't find working directory"),
+        Ok(work_dir) => work_dir
+    };
 
-    let stream_res = std::net::TcpStream::connect(&address[..]);
-    match stream_res {
-        Err(ref e) => { println!("Error: {}.", e); exit(1); },
-        _ => {}
-    }
-    let mut stream = stream_res.unwrap();
+    let mut stream = match std::net::TcpStream::connect(&address[..]) {
+        Err(e) => error!("{}", e),
+        Ok(stream) => stream
+    };
 
     send_data(&mut stream, CALL_SIGN.as_bytes());
 
     if check_agreement(&mut stream) == false {
-        error("No server found");
+        error!("No server found");
     }
 
     let mut msg_file = vec![0u8; MSG_FILE.len()];
@@ -320,7 +319,7 @@ fn receive(address: &String) {
             break;
         }
         else if compare_byte_array(&msg_file[..], MSG_FILE.as_bytes()) == false {
-            error("Invalid protocol");
+            error!("Invalid protocol");
         }
 
         let filesize = receive_u64(&mut stream);
@@ -347,14 +346,14 @@ fn receive(address: &String) {
             if (filesize - i) >= buf.len() as u64 {
                 receive_data(&mut stream, &mut buf);
                 if let Err(_) = file.write(&buf) {
-                    error("Couldn't write to file");
+                    error!("Couldn't write to file");
                 }
                 i += buf.len() as u64;
             }
             else {
                 receive_data(&mut stream, &mut buf[..(filesize - i) as usize]);
                 if let Err(_) = file.write(&buf[..(filesize - i) as usize]) {
-                    error("Couldn't write to file");
+                    error!("Couldn't write to file");
                 }
                 i = filesize-1;
             }
