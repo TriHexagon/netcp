@@ -124,8 +124,7 @@ fn send_string(stream: &mut std::net::TcpStream, string: &str) {
 
 fn receive_string(stream: &mut std::net::TcpStream) -> String {
     let size = receive_u64(stream);
-    let mut vec: Vec<u8> = Vec::with_capacity(size as usize);
-    unsafe { vec.set_len(size as usize); };
+    let mut vec = vec![0u8; size as usize];
     receive_data(stream, &mut vec[..] );
     let string_res = String::from_utf8(vec);
     match string_res {
@@ -136,8 +135,7 @@ fn receive_string(stream: &mut std::net::TcpStream) -> String {
 }
 
 fn check_agreement(stream: &mut std::net::TcpStream) -> bool {
-    let mut vec: Vec<u8> = Vec::with_capacity(MSG_AGREE.len());
-    unsafe { vec.set_len(MSG_AGREE.len()); };
+    let mut vec = vec![0u8; MSG_AGREE.len()];
     receive_data(stream, &mut vec[..]);
 
     if compare_byte_array(&vec[..], MSG_AGREE.as_bytes()) {
@@ -314,8 +312,7 @@ fn receive(address: &String) {
         error("No server found");
     }
 
-    let mut msg_file: Vec<u8> = Vec::with_capacity(MSG_FILE.len());
-    unsafe { msg_file.set_len(MSG_FILE.len()); };
+    let mut msg_file = vec![0u8; MSG_FILE.len()];
     loop {
         receive_data(&mut stream, &mut msg_file[..]);
 
